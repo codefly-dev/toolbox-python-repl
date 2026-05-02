@@ -27,7 +27,7 @@
           pname = "toolbox-python-repl";
           version = "0.0.1";
           src = pkgs.lib.cleanSource ./.;
-          vendorHash = pkgs.lib.fakeHash;
+          vendorHash = "sha256-GVHEI/RJu886m/MnXhHtNQJQSOZHursgvW62EmaUkQc=";
           # Build only the binary entrypoint, not the test packages —
           # `subPackages` keeps the nix build narrow + fast.
           subPackages = [ "cmd/toolbox-python-repl" ];
