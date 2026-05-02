@@ -1,0 +1,37 @@
+name: python-repl
+version: 0.0.1
+description: |
+  A persistent Python REPL session as typed RPCs. Every call lands
+  in the same `python -i` subprocess kept alive inside the plugin,
+  so variables and imports defined in one eval persist across calls
+  — that's the whole point of a REPL.
+
+  Why a plugin (not a tool function): a stateless tool function
+  can't host a REPL. Codefly's plugin model keeps the binary alive
+  on a UDS, which keeps the python interpreter alive — statefulness
+  lives in the plugin process, the wire shape stays clean RPC.
+
+agent:
+  kind: codefly:toolbox
+  name: python-repl
+  publisher: codefly.dev
+  version: 0.0.1
+
+sandbox:
+  # The REPL can read the workspace (open files, import local modules)
+  # and write to a scratch dir. Network is denied by default — opt in
+  # via env if a script genuinely needs it. Tightening these is on
+  # the roadmap once the host applies them at spawn time for plugins
+  # in agents/toolboxes/.
+  read_paths:
+    - "${WORKSPACE}"
+  write_paths:
+    - "${WORKSPACE}/.codefly/python-repl"
+  network: deny
+  unix_sockets: []
+
+# REPL is not a binary canonical — bash never routes here. The agent
+# discovers it the normal way (ListToolSummaries).
+canonical_for: []
+
+spec: {}

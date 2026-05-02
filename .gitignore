@@ -1,0 +1,14 @@
+# go.work is local-development only — pins the in-tree codefly.dev/core
+# checkout. Don't ship it; cloners build against the published core
+# version pinned in go.mod.
+go.work
+go.work.sum
+
+# Compiled binaries (the executable; the cmd/ subdir with main.go stays).
+/toolbox-python-repl
+/cmd/toolbox-python-repl/toolbox-python-repl
+
+# Editor + OS junk
+.DS_Store
+.idea/
+.vscode/
