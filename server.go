@@ -24,10 +24,9 @@ import (
 	"sync"
 	"time"
 
-	"google.golang.org/protobuf/types/known/structpb"
-
 	toolboxv0 "github.com/codefly-dev/core/generated/go/codefly/services/toolbox/v0"
 	"github.com/codefly-dev/core/toolbox/registry"
+	"github.com/codefly-dev/core/toolbox/respond"
 )
 
 // sentinelStdout is printed by the helper after every eval; the
@@ -89,11 +88,11 @@ while True:
 // One session per plugin process for now; multi-session-per-process
 // is a future enhancement (keyed by session_id in the request).
 type session struct {
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  *bufio.Reader
-	epoch   int64 // increments on every (re)start; surfaces in eval responses
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    *bufio.Reader
+	epoch     int64 // increments on every (re)start; surfaces in eval responses
 	pythonBin string
 }
 
@@ -101,9 +100,7 @@ type session struct {
 // boilerplate RPCs; owns Identity + Tools + per-tool handlers.
 type Server struct {
 	*registry.Base
-
-	version string
-	sess    *session
+	sess *session
 }
 
 // New constructs a Server. The python binary is resolved from PATH
@@ -112,21 +109,15 @@ type Server struct {
 // can boot even when python isn't installed (Identity still works).
 func New(version, pythonBin string) *Server {
 	s := &Server{
-		version: version,
-		sess:    &session{pythonBin: pythonBin},
+		sess: &session{pythonBin: pythonBin},
 	}
-	s.Base = registry.NewBase(s)
-	return s
-}
-
-func (s *Server) Identity(_ context.Context, _ *toolboxv0.IdentityRequest) (*toolboxv0.IdentityResponse, error) {
-	return &toolboxv0.IdentityResponse{
+	s.Base = registry.NewBase(registry.Descriptor{
 		Name:           "python-repl",
-		Version:        s.version,
+		Version:        version,
 		Description:    "Persistent Python REPL — variables and imports survive across eval calls.",
-		CanonicalFor:   []string{},
 		SandboxSummary: "needs python on PATH; reads workspace; network deny",
-	}, nil
+	}, s.Tools()...)
+	return s
 }
 
 // Close terminates the python subprocess if it's running. Idempotent.
@@ -150,7 +141,7 @@ func (s *Server) Tools() []*registry.ToolDefinition {
 				"scripts, write to a file and execute that file in the REPL.\n\n" +
 				"There is a per-call timeout (default 30s) — runaway code will be interrupted and the " +
 				"session may be reset.",
-			InputSchema: mustSchema(map[string]any{
+			InputSchema: respond.Schema(map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"code": map[string]any{
@@ -171,17 +162,17 @@ func (s *Server) Tools() []*registry.ToolDefinition {
 			Examples: []*toolboxv0.ToolExample{
 				{
 					Description:     "Define a variable, then read it in a later call.",
-					Arguments:       mustStruct(map[string]any{"code": "x = 42"}),
+					Arguments:       respond.MustStruct(map[string]any{"code": "x = 42"}),
 					ExpectedOutcome: "{ stdout: '', stderr: '', session_epoch: 1 }. A subsequent call with code='print(x)' prints 42.",
 				},
 				{
 					Description:     "Evaluate an expression — the repr is printed.",
-					Arguments:       mustStruct(map[string]any{"code": "1 + 2"}),
+					Arguments:       respond.MustStruct(map[string]any{"code": "1 + 2"}),
 					ExpectedOutcome: "{ stdout: '3\\n', stderr: '', session_epoch: 1 }",
 				},
 				{
 					Description:     "Catch a syntax/runtime error.",
-					Arguments:       mustStruct(map[string]any{"code": "1/0"}),
+					Arguments:       respond.MustStruct(map[string]any{"code": "1/0"}),
 					ExpectedOutcome: "stderr contains 'ZeroDivisionError: division by zero', session continues normally.",
 				},
 			},
@@ -194,7 +185,7 @@ func (s *Server) Tools() []*registry.ToolDefinition {
 				"the next eval call. Use to clear all globals, imports, and recover from a stuck session. " +
 				"After reset, the next eval response carries a higher session_epoch — agents detecting " +
 				"this can re-establish whatever state they need.",
-			InputSchema: mustSchema(map[string]any{
+			InputSchema: respond.Schema(map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
 			}),
@@ -205,7 +196,7 @@ func (s *Server) Tools() []*registry.ToolDefinition {
 			Examples: []*toolboxv0.ToolExample{
 				{
 					Description:     "Wipe state after defining a bunch of throwaway vars.",
-					Arguments:       mustStruct(map[string]any{}),
+					Arguments:       respond.MustStruct(map[string]any{}),
 					ExpectedOutcome: "{ ok: true, new_epoch: <prev+1> }",
 				},
 			},
@@ -217,10 +208,10 @@ func (s *Server) Tools() []*registry.ToolDefinition {
 // --- Handlers -------------------------------------------------
 
 func (s *Server) eval(_ context.Context, req *toolboxv0.CallToolRequest) *toolboxv0.CallToolResponse {
-	args := argsMap(req)
+	args := respond.Args(req)
 	code, _ := args["code"].(string)
 	if code == "" {
-		return errResp("python.repl.eval: code is required")
+		return respond.Error("python.repl.eval: code is required")
 	}
 	timeout := 30 * time.Second
 	if v, ok := args["timeout_seconds"].(float64); ok && v > 0 {
@@ -231,7 +222,7 @@ func (s *Server) eval(_ context.Context, req *toolboxv0.CallToolRequest) *toolbo
 	}
 
 	if err := s.sess.ensureStarted(); err != nil {
-		return errResp("start: %v", err)
+		return respond.Error("start: %v", err)
 	}
 
 	stdout, stderr, err := s.sess.eval(code, timeout)
@@ -239,9 +230,9 @@ func (s *Server) eval(_ context.Context, req *toolboxv0.CallToolRequest) *toolbo
 		// Reset on protocol-level failure (broken pipe, unparseable
 		// output) so the next call gets a clean process.
 		_ = s.sess.kill()
-		return errResp("eval: %v", err)
+		return respond.Error("eval: %v", err)
 	}
-	return structResp(map[string]any{
+	return respond.Struct(map[string]any{
 		"stdout":        stdout,
 		"stderr":        stderr,
 		"session_epoch": s.sess.currentEpoch(),
@@ -251,7 +242,7 @@ func (s *Server) eval(_ context.Context, req *toolboxv0.CallToolRequest) *toolbo
 func (s *Server) reset(_ context.Context, _ *toolboxv0.CallToolRequest) *toolboxv0.CallToolResponse {
 	prev := s.sess.currentEpoch()
 	_ = s.sess.kill()
-	return structResp(map[string]any{
+	return respond.Struct(map[string]any{
 		"ok":        true,
 		"new_epoch": prev + 1, // ensureStarted on next eval bumps to this
 	})
@@ -424,38 +415,3 @@ func extractJSONString(s, key string) string {
 	}
 	return out.String()
 }
-
-// --- structpb helpers ----------------------------------------
-
-func argsMap(req *toolboxv0.CallToolRequest) map[string]any {
-	if req == nil || req.Arguments == nil {
-		return map[string]any{}
-	}
-	return req.Arguments.AsMap()
-}
-
-func errResp(format string, a ...any) *toolboxv0.CallToolResponse {
-	return &toolboxv0.CallToolResponse{Error: fmt.Sprintf(format, a...)}
-}
-
-func structResp(payload map[string]any) *toolboxv0.CallToolResponse {
-	pb, err := structpb.NewStruct(payload)
-	if err != nil {
-		return errResp("encode response: %v", err)
-	}
-	return &toolboxv0.CallToolResponse{
-		Content: []*toolboxv0.Content{
-			{Body: &toolboxv0.Content_Structured{Structured: pb}},
-		},
-	}
-}
-
-func mustStruct(m map[string]any) *structpb.Struct {
-	s, err := structpb.NewStruct(m)
-	if err != nil {
-		panic(fmt.Sprintf("python-repl toolbox: cannot encode example args: %v", err))
-	}
-	return s
-}
-
-func mustSchema(m map[string]any) *structpb.Struct { return mustStruct(m) }

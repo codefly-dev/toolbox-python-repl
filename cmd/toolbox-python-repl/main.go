@@ -17,24 +17,12 @@
 package main
 
 import (
-	"os"
-
 	"github.com/codefly-dev/core/agents"
+	coretoolbox "github.com/codefly-dev/core/toolbox"
 	pythonrepl "github.com/codefly-dev/toolbox-python-repl"
 )
 
 func main() {
-	version := envOr("CODEFLY_TOOLBOX_VERSION", "0.0.0-dev")
-	pythonBin := os.Getenv("CODEFLY_TOOLBOX_PYTHON_BIN")
-	server := pythonrepl.New(version, pythonBin)
-	agents.Serve(agents.PluginRegistration{
-		Toolbox: server,
-	})
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
+	server := pythonrepl.New(coretoolbox.Version(), coretoolbox.Environment("CODEFLY_TOOLBOX_PYTHON_BIN", ""))
+	agents.ServeToolbox(server)
 }
