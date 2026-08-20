@@ -12,3 +12,5 @@ go.work.sum
 .DS_Store
 .idea/
 .vscode/
+# Built agent binary (rebuilt by `codefly agent build`).
+toolbox-python-repl
